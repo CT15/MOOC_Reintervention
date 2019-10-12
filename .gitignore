@@ -1,0 +1,19 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+
+# Environment
+venv/
+
+#macOS
+.DS_Store
+
+# Others
+ipynb/
+data/
+data_not_used/
+documentation/
+glove.6B/
+inspect/
+
+# Jupyter
+.ipynb_checkpoints/
