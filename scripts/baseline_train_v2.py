@@ -6,10 +6,77 @@ import numpy as np
 import pickle
 import pandas as pd
 from collections import Counter
+import argparse
+import os
+from datetime import datetime
+from sklearn.metrics import f1_score, recall_score, precision_score
+import matplotlib.pyplot as plt
 
-# load train test data
-test_data = pd.read_csv('../data/baseline/single_intervention/baseline.single_intervention.test.shuffle_seed1_take1845.csv', comment='#')
-train_data = pd.read_csv('../data/baseline/single_intervention/baseline.single_intervention.train.shuffle_seed1_take7329.csv', comment='#')
+###############
+MAX_NUM_OF_WORDS = 200
+BATCH_SIZE = 9
+###############
+
+parser = argparse.ArgumentParser(description='Train baseline model')
+parser.add_argument('-i', action='store', 
+                    type=str, required=True, help='Path to intervened data csv')
+parser.add_argument('-n', action='store', 
+                    type=str, required=True, help='Path to not intervened data csv')
+parser.add_argument('-s', action='store',
+                    type=int, required=True, help='Seed')
+parser.add_argument('-t', action='store',
+                    type=int, required=True, help='Percentage of data to take (int [10, 100])')
+parser.add_argument('-e', action='store',
+                    type=int, required=True, help='Epoch')
+
+args = vars(parser.parse_args())
+
+path_to_intervened_data = args['i']
+path_to_not_intervened_data = args['n']
+seed = args['s']
+take = args['t']
+epochs = args['e']
+log_file_path = f'{os.path.dirname(os.path.abspath(__file__))}/results/baseline.seed{seed}.take{take}.epoch{epochs}.txt'
+
+def write_log(text, _print=True):
+    if os.path.exists(log_file_path):
+        append_write = 'a' # append if already exists
+    else:
+        append_write = 'w' # make a new file if not
+
+    f = open(log_file_path, append_write)
+    f.write(f'{text}\n')
+    f.close()
+
+    if _print:
+        print(text)
+
+assert take >= 1 and take <= 100
+
+# Logging
+write_log(f'baseline_train_v2 >> Run on {datetime.now()}')
+write_log(f'Path to intervened data: {path_to_intervened_data}')
+write_log(f'Path to not intervened data: {path_to_not_intervened_data}')
+write_log(f'Path to not intervened data: {path_to_not_intervened_data}')
+write_log(f'Seed: {seed}\nPercentage of data taken: {take}%\nEpochs specified: {epochs}')
+write_log(f'Max number of words in a thread: {MAX_NUM_OF_WORDS}')
+write_log(f'Batch size: {BATCH_SIZE}')
+
+# load data
+intervened_data = pd.read_csv(path_to_intervened_data, comment='#')
+not_intervened_data = pd.read_csv(path_to_not_intervened_data, comment='#')
+
+# shuffle and take data
+intervened_data = intervened_data.sample(frac=take/100, replace=False, random_state=seed)
+not_intervened_data = not_intervened_data.sample(frac=take/100, replace=False, random_state=seed)
+
+# train test validation split
+intervened_train, intervened_val, intervened_test = np.split(intervened_data, [int(.8 * len(intervened_data)), int(.9 * len(intervened_data))])
+not_intervened_train, not_intervened_val, not_intervened_test = np.split(not_intervened_data, [int(.8 * len(not_intervened_data)), int(.9 * len(not_intervened_data))])
+
+train_data = pd.concat([intervened_train, not_intervened_train], ignore_index=True)
+val_data = pd.concat([intervened_val, not_intervened_val], ignore_index=True)
+test_data = pd.concat([intervened_test, not_intervened_test], ignore_index=True)
 
 # load GloVe Data into dict
 emb_dim = 300
@@ -19,22 +86,19 @@ word2idx = pickle.load(open(f'../glove.6B/extracted/glove.6B.300d_idx.pkl', 'rb'
 
 glove = {w: vectors[word2idx[w]] for w in words}
 
-# filter out data with length > 200
-test_data = test_data[test_data.text.str.split(" ").str.len() <= 200]
-train_data = train_data[train_data.text.str.split(" ").str.len() <= 200]
-# need these to be printed AGAIN at the end
-a = len(test_data)
-b = len(train_data)
-c = len(test_data)/len(train_data)
-print(f'len of test_data: {a}')
-print(f'len of train_data: {b}')
-print(f'ratio of test to train: {c}')
+# filter out data with length > MAX_NUM_OF_WORDS
+test_data = test_data[test_data.text.str.split(" ").str.len() <= MAX_NUM_OF_WORDS]
+val_data = val_data[val_data.text.str.split(" ").str.len() <= MAX_NUM_OF_WORDS]
+train_data = train_data[train_data.text.str.split(" ").str.len() <= MAX_NUM_OF_WORDS]
+write_log(f'len of test_data (before batching): {len(test_data)}')
+write_log(f'len of train_data (before batching): {len(train_data)}')
+write_log(f'len of val_data (before batching): {len(val_data)}')
 
 # take notes of words in train data
 train_sentences = list(train_data.text)
 
 for sentence in train_sentences:
-    assert len(sentence.split(" ")) <= 200
+    assert len(sentence.split(" ")) <= MAX_NUM_OF_WORDS
 
 words = Counter()
 for i, sentence in enumerate(train_sentences):
@@ -89,7 +153,7 @@ for i, word in idx2words.items():
 
 assert existing_words + new_words == len(words)
 
-# map train and test sentences to arrays of indices
+# map train, test and val sentences to arrays of indices
 unknown_index = word2idx['<unk>']
 
 for i, sentence in enumerate(train_sentences):
@@ -98,8 +162,14 @@ for i, sentence in enumerate(train_sentences):
 test_sentences = list(test_data.text)
 for i, sentence in enumerate(test_sentences):
     word_list = sentence.split(" ")
-    assert len(word_list) <= 200
+    assert len(word_list) <= MAX_NUM_OF_WORDS
     test_sentences[i] = [word2idx[word] if word in word2idx else unknown_index for word in word_list]
+
+val_sentences = list(val_data.text)
+for i, sentence in enumerate(val_sentences):
+    word_list = sentence.split(" ")
+    assert len(word_list) <= MAX_NUM_OF_WORDS
+    val_sentences[i] = [word2idx[word] if word in word2idx else unknown_index for word in word_list]
 
 # pad with index of <unk> at the end of each sentence
 def pad_input(sentences, seq_len):
@@ -109,29 +179,27 @@ def pad_input(sentences, seq_len):
         features[i, 0:len(sentence)] = np.array(sentence)
     return features
 
-seq_len = 200
+seq_len = MAX_NUM_OF_WORDS
 
 train_sentences = pad_input(train_sentences, seq_len)
 test_sentences = pad_input(test_sentences, seq_len)
+val_sentences= pad_input(val_sentences, seq_len)
 
-assert train_sentences.shape[1] == 200
-assert test_sentences.shape[1] == 200
+assert train_sentences.shape[1] == MAX_NUM_OF_WORDS
+assert test_sentences.shape[1] == MAX_NUM_OF_WORDS
+assert val_sentences.shape[1] == MAX_NUM_OF_WORDS
 
 train_labels = np.array(list(train_data.intervened))
 test_labels = np.array(list(test_data.intervened))
-
-assert train_labels.shape[0] == train_sentences.shape[0]
-assert test_labels.shape[0] == test_labels.shape[0]
+val_labels = np.array(list(val_data.intervened))
 
 train_data = TensorDataset(torch.from_numpy(train_sentences).type('torch.FloatTensor'), torch.from_numpy(train_labels))
 test_data = TensorDataset(torch.from_numpy(test_sentences).type('torch.FloatTensor'), torch.from_numpy(test_labels))
+val_data = TensorDataset(torch.from_numpy(val_sentences).type('torch.FloatTensor'), torch.from_numpy(val_labels))
 
-###############
-BATCH_SIZE = 9
-###############
-
-train_loader = DataLoader(train_data, shuffle=True, batch_size=BATCH_SIZE, drop_last=True) # how to not drop last? 
-test_loader =  DataLoader(test_data, shuffle=True, batch_size=BATCH_SIZE, drop_last=True) # how to not drop last?
+train_loader = DataLoader(train_data, shuffle=False, batch_size=BATCH_SIZE, drop_last=True)  
+test_loader =  DataLoader(test_data, shuffle=False, batch_size=BATCH_SIZE, drop_last=True)
+val_loader = DataLoader(val_data, shuffle=False, batch_size=BATCH_SIZE, drop_last=True)
 
 is_cuda = torch.cuda.is_available()
 
@@ -210,25 +278,61 @@ model.to(device)
 learning_rate = 0.005
 criterion = nn.BCELoss() # Binary Cross Entropy
 optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-epochs = 1
 clip = 5
 ###############
 
 valid_loss_min = np.Inf
-completed = 0 # for progress tracking
+
+def evaluate(model, data_loader):
+    # eval_losses = []
+    # num_correct = 0
+    h = model.init_hidden(BATCH_SIZE)
+    preds = []
+    truths = []
+
+    model.eval()
+    for inputs, labels in data_loader:
+        h = tuple([each.data for each in h])
+        assert h[0].size() == torch.Size([model.n_layers * 1, BATCH_SIZE, model.hidden_dim]) # hidden_state
+        assert h[1].size() ==  torch.Size([model.n_layers * 1, BATCH_SIZE, model.hidden_dim]) # cell_state
+
+        inputs, labels = inputs.to(device), labels.to(device)
+        output, h = model(inputs, h)
+
+        # eval_loss = criterion(output.squeeze(), labels.float())
+        # eval_losses.append(eval_loss.item())
+        pred = torch.round(output.squeeze())  # Rounds the output to 0/1
+        # correct_tensor = pred.eq(labels.float().view_as(pred))
+        # correct = np.squeeze(correct_tensor.cpu().numpy())
+        # num_correct += np.sum(correct)
+        preds.append(pred.tolist())
+        truths.append(labels.squeeze().tolist())
+    
+    # accuracy = num_correct/len(data_loader.dataset)
+    # average_losses = np.mean(eval_losses)
+
+    preds = [int(pred) for predlist in preds for pred in predlist]
+    truths = [truth for truthlist in truths for truth in truthlist]
+    
+    # return accuracy, average_losses, preds, truths
+    return truths, preds
 
 #####  TRAINING #####
-model.train()
-for i in range(epochs):
+write_log('##### TRAINING #####')
+
+epoch_with_min_loss = 0
+min_loss = np.Inf
+
+# for plotting purpose
+y_axis = []
+x_axis = []
+for epoch in range(1, epochs+1):
+    model.train()
+
     h = model.init_hidden(BATCH_SIZE)
+    batch_completed = 0 # for progress tracking
 
     for inputs, labels in train_loader:
-        # diff = BATCH_SIZE - inputs.size[0]
-        # if diff > 0: # need to have dummy data to have a full batch
-        #     dummy_sentences = torch.from_numpy(np.zeros((diff, seq_len))).type('torch.FloatTensor')
-        #     dummy_labels = torch.from_numpy(np.zeros((diff, seq_len)))
-        #     torch.cat((inputs, dummy_sentences), 0)
-        #     torch.cat((labels, dummy_labels), 0)
 
         inputs, labels = inputs.to(device), labels.to(device)
         model.zero_grad()
@@ -240,37 +344,49 @@ for i in range(epochs):
 
         output, h = model(inputs, h)
         loss = criterion(output.squeeze(), labels.float())
+
         loss.backward()
         nn.utils.clip_grad_norm_(model.parameters(), clip)
         optimizer.step()
 
-        completed += 1
-        print(f'{completed} / {int(len(train_data)//BATCH_SIZE)}')
+        batch_completed += 1
+        # Feel like too many things are printed out...
+        # write_log(f'Epoch: {epoch} | batch completed: {batch_completed} / {int(len(train_data)//BATCH_SIZE)} | Training Loss: {loss}')
+    
+    if min_loss > loss:
+        epoch_with_min_loss = epoch
+        min_loss = loss
 
+    y_axis.append(loss)
+    x_axis.append(epoch)
 
-test_losses = []
-num_correct = 0
-h = model.init_hidden(BATCH_SIZE)
+    # Test the f1 of training and validation. Break if training f1 >= validation f1 (both grater than 0)
+    train_truths, train_preds = evaluate(model, train_loader)
+    val_truths, val_preds = evaluate(model, val_loader)
+    train_f1 = f1_score(train_truths, train_preds)
+    val_f1 = f1_score(val_truths, val_preds)
 
-model.eval()
-for inputs, labels in test_loader:
-    h = tuple([each.data for each in h])
-    assert h[0].size() == torch.Size([model.n_layers * 1, BATCH_SIZE, model.hidden_dim]) # hidden_state
-    assert h[1].size() ==  torch.Size([model.n_layers * 1, BATCH_SIZE, model.hidden_dim]) # cell_state
+    write_log(f'>> End of Epoch {epoch} | Train F1: {round(train_f1, 3)} | Validation F1: {round(val_f1, 3)}')
 
-    inputs, labels = inputs.to(device), labels.to(device)
-    output, h = model(inputs, h)
+    if train_f1 > 0 and val_f1 > 0 and val_f1 - train_f1 >= 0:
+        write_log(f'*** Break training at epoch {epoch} ***')
+        break
 
-    test_loss = criterion(output.squeeze(), labels.float())
-    test_losses.append(test_loss.item())
-    pred = torch.round(output.squeeze())  # Rounds the output to 0/1
-    correct_tensor = pred.eq(labels.float().view_as(pred))
-    correct = np.squeeze(correct_tensor.cpu().numpy())
-    num_correct += np.sum(correct)
+truths, preds = evaluate(model, test_loader)
+test_f1 = f1_score(truths, preds)
+precision = precision_score(truths, preds)
+recall = recall_score(truths, preds)
 
-print(f'len of test_data: {a}')
-print(f'len of train_data: {b}')
-print(f'ratio of test to train: {c}')
-print("Test loss: {:.3f}".format(np.mean(test_losses)))
-test_acc = num_correct/len(test_loader.dataset)
-print("Test accuracy: {:.3f}%".format(test_acc*100))
+# Plot
+plt.plot(x_axis, y_axis, 'ro')
+plt.plot(x_axis, y_axis)
+plt.savefig(f'{os.path.dirname(os.path.abspath(__file__))}/results/baseline.seed{seed}.take{take}.epoch{epochs}.png')
+print('image saved')
+
+write_log(f'Precision (test): {round(precision, 3)}')
+write_log(f'Recall (test): {round(recall, 3)}')
+write_log(f'F1 (test): {round(test_f1, 3)}')
+write_log('-----')
+write_log(f'Epoch with min loss: {epoch_with_min_loss} | Loss: {min_loss}')
+write_log('Try to run the model using this epoch value.')
+write_log('===== END =====')
